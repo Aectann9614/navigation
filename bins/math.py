@@ -22,7 +22,7 @@ def calc_increments(values, step_time):
         return ((values[0] + values[-1]) / 2 + sum(values[1:-1])) * step_time
 
 
-def coning_compensation(angle_incs):
+def coning(angle_incs):
     def package(val):
         return np.array([[0, -val[2], val[1]],
                          [val[2], 0, -val[0]],
@@ -41,7 +41,7 @@ def coning_compensation(angle_incs):
     return rotation_vector
 
 
-def sculling_compensation(angle_incs, velocity_incs):
+def sculling(angle_incs, velocity_incs):
     if len(angle_incs) != 8 or len(velocity_incs) != 8:
         raise ValueError("Length of angle increments and velocity increments must be equals 8")
     vel_inc_body = np.zeros((3,), float)
@@ -82,11 +82,21 @@ def create_transform_matrix(fast_quat):
     return bins.quat.transform_matrix(quat)
 
 
+def orientation_calc(init_fast_quat, step_time):
+    def call(rotation_vector, angular_velocity):
+        nonlocal fast_quat
+        slow_quat = fast_motion(rotation_vector, fast_quat)
+        fast_quat = slow_motion(angular_velocity, slow_quat, step_time)
+        return create_transform_matrix(fast_quat)
+    fast_quat = init_fast_quat
+    return call
+
+
 # ========== Earth-fixed calculation ========== #
 
 
 def recalc_body2nav(velocity_inc_body, body_transform_matrix):
-    return np.dot(body_transform_matrix, velocity_inc_body.copy().resize(3, 1))
+    return np.dot(body_transform_matrix, velocity_inc_body.copy().resize((3, 1)))
 
 
 def earth_integration(integrate, velocity, earth_velocity, nav2earth_ang_vel, step_time):
@@ -134,6 +144,24 @@ def calc_nav_transform(nav_transform, nav2earth_ang_vel, step_time):
     new_nav_transf[2, 2] = nav_transform[2, 2] + (mu_y * nav_transform[0, 2] - mu_x * nav_transform[1, 2]) * step_time
     new_nav_transf[2, 0] = nav_transform[0, 1] * nav_transform[1, 2] - nav_transform[1, 1] * nav_transform[0, 2]
     return new_nav_transf
+
+
+def earth_fixed_calc(init_nav_transform, init_velocity, altitude, step_time):
+    def calc(velocity_inc):
+        nonlocal velocity, nav_transform, vel_sum, earth_int
+        nav2earth_ang_vel = calc_nav2earth_angular_velocity(velocity, nav_transform, altitude)
+        nav_transform = calc_nav_transform(nav_transform, nav2earth_ang_vel, step_time)
+        earth_vel = calc_earth_velocity(nav_transform)
+        vel_sum = vel_sum[0] + velocity_inc[0], vel_sum[1] + velocity_inc[1], vel_sum[2] + velocity_inc[2]
+        earth_int = earth_integration(earth_int, velocity, earth_vel, nav2earth_ang_vel, step_time)
+        velocity = vel_sum[0] + earth_int[0], vel_sum[1] + earth_int[1]
+        ang_vel = calc_angular_velocity(nav2earth_ang_vel, earth_vel)
+        return (nav_transform, velocity), ang_vel
+    velocity = init_velocity
+    nav_transform = init_nav_transform
+    vel_sum = (0.0, 0.0, 0.0)
+    earth_int = (0.0, 0.0)
+    return calc
 
 
 # ========== Calculation of navigation params ========== #
